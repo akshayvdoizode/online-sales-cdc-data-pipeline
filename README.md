@@ -13,10 +13,10 @@ This project is a critical component in a Change Data Capture (CDC) pipeline tha
 ## CDC Pipeline Architecture
 
 ```ascii
-┌──────────────┐    ┌─────────────────┐    ┌───────────────┐    ┌─────────────────┐
-│   DynamoDB   │───►│ DynamoDB Stream │───►│ AWS Lambda    │───►│ Downstream      │
-│   Table      │    │ (Change Events) │    │ Transformer   │    │ Processing      │
-└──────────────┘    └─────────────────┘    └───────────────┘    └─────────────────┘
+┌──────────────┐    ┌─────────────────┐    ┌───────────────┐    ┌─────────────────┐    ┌─────────────┐    ┌────────────┐
+│   DynamoDB   │───►│ DynamoDB Stream │───►│ AWS Lambda    │───►│ Data Lake       │───►│   Athena    │───►│ QuickSight │
+│   Table      │    │ (Change Events) │    │ Transformer   │    │ (S3)            │     │   Queries   │     │ Dashboard  │
+└──────────────┘    └─────────────────┘    └───────────────┘    └─────────────────┘    └─────────────┘    └────────────┘
 ```
 
 ## Features
@@ -32,6 +32,8 @@ This project is a critical component in a Change Data Capture (CDC) pipeline tha
   - Creation timestamp
 - Includes error handling for robust processing
 - Base64 encoding/decoding for data compatibility
+- Integration with Amazon Athena for SQL-based analysis
+- QuickSight dashboards for real-time data visualization
 
 ## Technical Details
 
@@ -79,6 +81,9 @@ The function transforms the data into:
 - Python 3.8+
 - AWS Lambda
 - DynamoDB Streams enabled on your table
+- Amazon Athena
+- Amazon QuickSight subscription
+- S3 bucket for Athena query results
 
 ## Setup
 
@@ -98,6 +103,33 @@ The function transforms the data into:
 
 4. Configure appropriate IAM permissions
 
+5. Configure Athena Integration:
+
+   - Create a database in Athena
+   - Create a table using the following DDL:
+
+   ```sql
+   CREATE EXTERNAL TABLE IF NOT EXISTS orders (
+     orderid string,
+     product_name string,
+     quantity int,
+     price decimal(10,2),
+     cdc_event_type string,
+     creation_datetime timestamp
+   )
+   STORED AS PARQUET
+   LOCATION 's3://your-bucket/transformed-data/';
+   ```
+
+6. Set up QuickSight:
+   - Connect QuickSight to Athena as a data source
+   - Create a new dataset using the orders table
+   - Design dashboards for:
+     - Order volume trends
+     - Product performance analysis
+     - Revenue metrics
+     - Change event monitoring
+
 ## IAM Permissions
 
 The Lambda function requires the following permissions:
@@ -115,6 +147,21 @@ The Lambda function requires the following permissions:
         "dynamodb:ListStreams"
       ],
       "Resource": "your-dynamodb-stream-arn"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "athena:StartQueryExecution",
+        "athena:GetQueryResults",
+        "s3:GetBucketLocation",
+        "s3:GetObject",
+        "s3:ListBucket",
+        "s3:PutObject"
+      ],
+      "Resource": [
+        "arn:aws:athena:*:*:workgroup/*",
+        "arn:aws:s3:::your-bucket/*"
+      ]
     }
   ]
 }
@@ -137,6 +184,45 @@ Monitor your CDC pipeline using:
 - CloudWatch Logs for detailed processing logs
 - DynamoDB Streams metrics
 - Lambda execution metrics
+- Athena query performance metrics
+- QuickSight dashboard usage analytics
+
+## Data Analysis
+
+### Athena Queries
+
+Common analysis queries:
+
+```sql
+-- Get daily order totals
+SELECT DATE(creation_datetime) as order_date,
+       COUNT(*) as order_count,
+       SUM(price * quantity) as daily_revenue
+FROM orders
+WHERE cdc_event_type = 'INSERT'
+GROUP BY DATE(creation_datetime)
+ORDER BY order_date DESC;
+
+-- Top selling products
+SELECT product_name,
+       SUM(quantity) as total_quantity,
+       SUM(price * quantity) as total_revenue
+FROM orders
+WHERE cdc_event_type = 'INSERT'
+GROUP BY product_name
+ORDER BY total_revenue DESC
+LIMIT 10;
+```
+
+### QuickSight Dashboards
+
+The project includes pre-built QuickSight dashboards for:
+
+- Sales Performance Overview
+- Product Analytics
+- Order Trends
+- CDC Event Monitoring
+- Revenue Analytics
 
 ## Contributing
 
