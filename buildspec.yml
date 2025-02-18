@@ -1,0 +1,68 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.8
+    commands:
+      - pip install --upgrade pip
+      - pip install pytest
+      - pip install pylint
+      - pip install coverage
+      - pip install boto3
+
+  pre_build:
+    commands:
+      # Run tests
+      - echo "Running unit tests..."
+      - coverage run -m pytest tests/
+      - coverage report
+      # Run linting
+      - echo "Running code quality checks..."
+      - pylint *.py --fail-under=8
+
+  build:
+    commands:
+      # Create deployment packages for each Lambda function
+      - echo "Creating deployment packages..."
+      - mkdir -p dist/
+      # Package TransformFunction
+      - zip -j dist/TransformFunction.zip TransformFunction.py
+      # Package MockGenerationFunction
+      - zip -j dist/MockGenerationFunction.zip MockGenerationFunction.py
+
+  post_build:
+    commands:
+      # Update Lambda functions
+      - echo "Deploying to Lambda..."
+      - |
+        aws lambda update-function-code \
+          --function-name ${TRANSFORM_FUNCTION_NAME} \
+          --zip-file fileb://dist/TransformFunction.zip
+      - |
+        aws lambda update-function-code \
+          --function-name ${MOCK_FUNCTION_NAME} \
+          --zip-file fileb://dist/MockGenerationFunction.zip
+      # Verify deployment
+      - echo "Verifying deployments..."
+      - |
+        aws lambda get-function \
+          --function-name ${TRANSFORM_FUNCTION_NAME} \
+          --query 'Configuration.LastUpdateStatus' \
+          --output text
+      - |
+        aws lambda get-function \
+          --function-name ${MOCK_FUNCTION_NAME} \
+          --query 'Configuration.LastUpdateStatus' \
+          --output text
+
+artifacts:
+  files:
+    - dist/*.zip
+    - cloudformation-template.yml
+    - README.md
+  discard-paths: no
+
+cache:
+  paths:
+    - "/root/.cache/pip/**/*"
