@@ -1,0 +1,320 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  CDC Pipeline Architecture:
+    - DynamoDB table with streams enabled (captures CDC data).
+    - A mock generation Lambda (MockGenerationFunction) triggered every 10 seconds via EventBridge.
+    - An EventBridge Pipe that batches DynamoDB stream records and feeds them directly to a Kinesis Firehose Delivery Stream.
+    - Kinesis Firehose uses a Lambda (TransformFunction) for enrichment/transformation before delivering data to S3.
+    - Glue Database and Crawler catalog the S3 data.
+
+Resources:
+  # ------------------------------
+  # DynamoDB Table with Streams Enabled
+  # ------------------------------
+  OrderTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ordertable
+      AttributeDefinitions:
+        - AttributeName: OrderID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: OrderID
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+
+  # ------------------------------
+  # IAM Role for EventBridge Pipe
+  # ------------------------------
+  PipeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: PipeRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: pipes.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PipePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeStream
+                  - dynamodb:GetRecords
+                  - dynamodb:GetShardIterator
+                  - dynamodb:ListStreams
+                Resource: "*" # For production, scope to your DynamoDB table stream ARN.
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecord
+                  - firehose:PutRecordBatch
+                Resource: "*" # For production, restrict to your Firehose stream ARN.
+
+  # ------------------------------
+  # IAM Role for Kinesis Firehose
+  # ------------------------------
+  FirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: FirehoseRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FirehosePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                  - s3:PutObject
+                Resource:
+                  - !Sub "${OrderBucket.Arn}"
+                  - !Sub "${OrderBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                  - lambda:GetFunctionConfiguration
+                Resource: "*" # Restrict this to your TransformFunction ARN in production.
+
+  # ------------------------------
+  # IAM Role for Enrichment Lambda Function (TransformFunction)
+  # ------------------------------
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  # ------------------------------
+  # IAM Role for Mock Generation Lambda Function
+  # ------------------------------
+  MockLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: MockLambdaRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: MockLambdaPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt OrderTable.Arn
+
+  # ------------------------------
+  # Enrichment/Transformation Lambda Function (TransformFunction)
+  # ------------------------------
+  TransformFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: TransformFunction
+      Handler: index.handler
+      Runtime: python3.8
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          import json, time
+          def handler(event, context):
+              # Example enrichment: add a flag and a timestamp to each record.
+              for record in event.get('records', []):
+                  record['enriched'] = True
+                  record['enrichedTimestamp'] = time.time()
+              return event
+
+  # ------------------------------
+  # Mock Data Generation Lambda Function
+  # ------------------------------
+  MockGenerationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: MockGenerationFunction
+      Handler: index.handler
+      Runtime: python3.8
+      Role: !GetAtt MockLambdaRole.Arn
+      Code:
+        ZipFile: |
+          import boto3, uuid, datetime
+          def handler(event, context):
+              dynamodb = boto3.resource('dynamodb')
+              table = dynamodb.Table('ordertable')
+              order_id = str(uuid.uuid4())
+              order_data = {
+                  'OrderID': order_id,
+                  'OrderDate': datetime.datetime.utcnow().isoformat(),
+                  'Amount': 100  # Static value; modify as needed.
+              }
+              table.put_item(Item=order_data)
+              return {"status": "success", "order_id": order_id}
+
+  # ------------------------------
+  # EventBridge Rule to Trigger MockGenerationFunction Every 10 Seconds
+  # ------------------------------
+  MockGenerationSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: MockGenerationSchedule
+      ScheduleExpression: "rate(10 seconds)" # For testing; note production minimum is 1 minute.
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt MockGenerationFunction.Arn
+          Id: "MockGenerationFunctionTarget"
+
+  # ------------------------------
+  # Permission for EventBridge to Invoke MockGenerationFunction
+  # ------------------------------
+  MockLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MockGenerationFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt MockGenerationSchedule.Arn
+
+  # ------------------------------
+  # S3 Bucket for Storing Processed Data
+  # ------------------------------
+  OrderBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-orderbucket"
+
+  # ------------------------------
+  # Kinesis Firehose Delivery Stream
+  # ------------------------------
+  OrderDeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: OrderDeliveryStream
+      DeliveryStreamType: DirectPut
+      S3DestinationConfiguration:
+        BucketARN: !GetAtt OrderBucket.Arn
+        RoleARN: !GetAtt FirehoseRole.Arn
+        BufferingHints:
+          IntervalInSeconds: 300
+          SizeInMBs: 5
+      ProcessingConfiguration:
+        Enabled: true
+        Processors:
+          - Type: Lambda
+            Parameters:
+              - ParameterName: LambdaArn
+                ParameterValue: !GetAtt TransformFunction.Arn
+              - ParameterName: NumberOfRetries
+                ParameterValue: "3"
+
+  # ------------------------------
+  # EventBridge Pipe: DynamoDB Stream → Kinesis Firehose Delivery Stream
+  # ------------------------------
+  DDBtoFirehosePipe:
+    Type: AWS::Pipes::Pipe
+    Properties:
+      Name: DDBtoFirehosePipe
+      RoleArn: !GetAtt PipeRole.Arn
+      Source: !GetAtt OrderTable.StreamArn
+      SourceParameters:
+        DynamoDBStreamParameters:
+          StartingPosition: LATEST
+      # Batch the events from the DynamoDB stream before sending.
+      BatchParameters:
+        BatchSize: 10
+        MaximumBatchingWindowInSeconds: 10
+      Target: !GetAtt OrderDeliveryStream.Arn
+
+  # ------------------------------
+  # AWS Glue Database for Cataloging Data
+  # ------------------------------
+  OrderDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: orderdatabase
+        Description: "Catalog database for CDC pipeline order data"
+
+  # ------------------------------
+  # IAM Role for Glue Crawler
+  # ------------------------------
+  GlueCrawlerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: GlueCrawlerRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: GlueCrawlerPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource: "*" # Refine as needed in production.
+
+  # ------------------------------
+  # AWS Glue Crawler to Discover S3 Data
+  # ------------------------------
+  OrderCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: OrderCrawler
+      Role: !GetAtt GlueCrawlerRole.Arn
+      DatabaseName: orderdatabase
+      Targets:
+        S3Targets:
+          - Path: !Sub "s3://${OrderBucket}"
+      Schedule: "cron(0 12 * * ? *)" # Daily at 12:00 UTC.
+
+Outputs:
+  DynamoDBTableName:
+    Description: "Name of the DynamoDB table"
+    Value: !Ref OrderTable
+  FirehoseDeliveryStreamName:
+    Description: "Name of the Kinesis Firehose Delivery Stream"
+    Value: OrderDeliveryStream
+  S3BucketName:
+    Description: "S3 bucket for processed data"
+    Value: !Ref OrderBucket
+  GlueDatabaseName:
+    Description: "AWS Glue Database for cataloging"
+    Value: orderdatabase
