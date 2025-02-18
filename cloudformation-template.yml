@@ -305,6 +305,127 @@ Resources:
           - Path: !Sub "s3://${OrderBucket}"
       Schedule: "cron(0 12 * * ? *)" # Daily at 12:00 UTC.
 
+  # Athena Resources
+  AthenaWorkGroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: CDCAnalyticsWorkGroup
+      Description: Workgroup for CDC data analysis
+      State: ENABLED
+      WorkGroupConfiguration:
+        ResultConfiguration:
+          OutputLocation: !Sub "s3://${S3BucketName}/athena-results/"
+          EncryptionConfiguration:
+            EncryptionOption: SSE_S3
+
+  AthenaDatabase:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref DatabaseName
+      Description: Creates database for CDC analytics
+      Name: CreateCDCDatabase
+      QueryString: !Sub "CREATE DATABASE IF NOT EXISTS ${DatabaseName}"
+      WorkGroup: !Ref AthenaWorkGroup
+
+  AthenaCDCTable:
+    Type: AWS::Athena::NamedQuery
+    DependsOn: AthenaDatabase
+    Properties:
+      Database: !Ref DatabaseName
+      Description: Creates table for CDC data
+      Name: CreateCDCTable
+      QueryString: !Sub |
+        CREATE EXTERNAL TABLE IF NOT EXISTS ${DatabaseName}.cdc_orders (
+          orderid STRING,
+          product_name STRING,
+          quantity INT,
+          price DOUBLE,
+          cdc_event_type STRING,
+          creation_datetime TIMESTAMP
+        )
+        ROW FORMAT SERDE 'org.openx.data.jsonserde.JsonSerDe'
+        LOCATION 's3://${S3BucketName}/transformed-data/'
+        TBLPROPERTIES ('has_encrypted_data'='false')
+      WorkGroup: !Ref AthenaWorkGroup
+
+  # IAM Roles and Policies
+  AthenaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: athena.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSQuicksightAthenaAccess
+      Policies:
+        - PolicyName: AthenaS3Access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:PutObject
+                Resource:
+                  - !Sub "arn:aws:s3:::${S3BucketName}"
+                  - !Sub "arn:aws:s3:::${S3BucketName}/*"
+
+  QuickSightS3Policy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Policy for QuickSight to access S3 and Athena
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - !Sub "arn:aws:s3:::${S3BucketName}"
+              - !Sub "arn:aws:s3:::${S3BucketName}/*"
+          - Effect: Allow
+            Action:
+              - athena:BatchGetQueryExecution
+              - athena:GetQueryExecution
+              - athena:GetQueryResults
+              - athena:GetWorkGroup
+              - athena:StartQueryExecution
+              - athena:StopQueryExecution
+              - athena:ListWorkGroups
+              - athena:ListNamedQueries
+              - athena:ListQueryExecutions
+            Resource: "*"
+
+  # QuickSight specific IAM role
+  QuickSightServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: quicksight.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref QuickSightS3Policy
+      Policies:
+        - PolicyName: QuickSightAthenaAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - athena:*
+                Resource: "*"
+
 Outputs:
   DynamoDBTableName:
     Description: "Name of the DynamoDB table"
@@ -318,3 +439,18 @@ Outputs:
   GlueDatabaseName:
     Description: "AWS Glue Database for cataloging"
     Value: orderdatabase
+  AthenaWorkGroupName:
+    Description: Name of the Athena WorkGroup
+    Value: !Ref AthenaWorkGroup
+  AthenaDatabaseName:
+    Description: Name of the Athena Database
+    Value: !Ref DatabaseName
+  AthenaTableName:
+    Description: Name of the CDC Orders table in Athena
+    Value: "cdc_orders"
+  QuickSightPolicyArn:
+    Description: ARN of the QuickSight IAM Policy
+    Value: !Ref QuickSightS3Policy
+  QuickSightServiceRoleArn:
+    Description: ARN of the QuickSight Service Role
+    Value: !GetAtt QuickSightServiceRole.Arn
