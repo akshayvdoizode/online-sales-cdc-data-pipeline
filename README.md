@@ -18,6 +18,7 @@ This project is a critical component in a Change Data Capture (CDC) pipeline tha
 │   Table      │    │ (Change Events) │    │ Transformer   │    │ (S3)            │     │   Queries   │     │ Dashboard  │
 └──────────────┘    └─────────────────┘    └───────────────┘    └─────────────────┘    └─────────────┘    └────────────┘
 ```
+![alt text](https://github.com/akshayvdoizode/online-sales-cdc-data-pipeline/blob/main/architecture-diagram.png?raw=true)
 
 ## Features
 
