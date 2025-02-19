@@ -12,12 +12,6 @@ This project is a critical component in a Change Data Capture (CDC) pipeline tha
 
 ## CDC Pipeline Architecture
 
-```ascii
-┌──────────────┐    ┌─────────────────┐    ┌───────────────┐    ┌─────────────────┐    ┌─────────────┐    ┌────────────┐
-│   DynamoDB   │───►│ DynamoDB Stream │───►│ AWS Lambda    │───►│ Data Lake       │───►│   Athena    │───►│ QuickSight │
-│   Table      │    │ (Change Events) │    │ Transformer   │    │ (S3)            │     │   Queries   │     │ Dashboard  │
-└──────────────┘    └─────────────────┘    └───────────────┘    └─────────────────┘    └─────────────┘    └────────────┘
-```
 ![alt text](https://github.com/akshayvdoizode/online-sales-cdc-data-pipeline/blob/main/architecture-diagram.png?raw=true)
 
 ## Features
