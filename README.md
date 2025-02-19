@@ -49,8 +49,7 @@ The function expects DynamoDB Stream records with the following structure:
   "records": [
     {
       "recordId": "...",
-      "data": "<base64-encoded-data>",
-      ...
+      "data": "<base64-encoded-data>"
     }
   ]
 }
@@ -64,8 +63,8 @@ The function transforms the data into:
 {
   "orderid": "string",
   "product_name": "string",
-  "quantity": number,
-  "price": number,
+  "quantity": "number",
+  "price": "number",
   "cdc_event_type": "INSERT|MODIFY|DELETE",
   "creation_datetime": "ISO8601 timestamp"
 }
